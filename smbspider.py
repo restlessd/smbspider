@@ -17,7 +17,9 @@
 
 import argparse
 import os
+import random
 import sys
+import tempfile
 import threading
 import time
 
@@ -27,7 +29,7 @@ from smb.SMBConnection import SMBConnection
 
 
 class ScanThread(threading.Thread):
-    def __init__(self, ip, share, subfolder, user, pwd, domain, recursive, pattern):
+    def __init__(self, ip, share, subfolder, user, pwd, domain, recursive, pattern, chance):
         threading.Thread.__init__(self)
         self.ip = ip
         self.share = share
@@ -37,22 +39,23 @@ class ScanThread(threading.Thread):
         self.domain = domain
         self.recursive = recursive
         self.pattern = pattern
+        self.chance = chance
 
     def run(self):
         print("Starting thread for " + self.ip)
         net = NetBIOS()
         net_name = str(net.queryIPForName(self.ip)).strip("['").strip("']")
         net.close()
-        conn = SMBConnection(self.user, self.pwd, 'cobwebs', net_name, domain=self.domain, use_ntlm_v2=False)
+        conn = SMBConnection(self.user, self.pwd, 'cobwebs', net_name, domain=self.domain, use_ntlm_v2=True)
         if conn.connect(self.ip, port=139, timeout=10):
             print(("Successfully connected to %s! Spidering %s%s!" % (self.ip, self.share, self.subfolder)))
         else:
             print("Failed to connect to: %s" % (self.ip))
         if int(self.recursive) > 0:
-            recurse(conn, self.ip, self.share, self.subfolder, self.pattern, int(self.recursive))
+            recurse(conn, self.ip, self.share, self.subfolder, self.pattern, int(self.recursive), self.chance)
         else:
             file_list = conn.listPath(self.share, self.subfolder)
-            dir_list(file_list, self.ip, self.subfolder, self.pattern)
+            dir_list(conn, self.ip, self.share, self.subfolder, self.pattern, self.chance, file_list)
         conn.close()
         print("Exiting thread for " + self.ip)
 
@@ -82,10 +85,10 @@ def get_ips(ip_arg):
     return ips
 
 
-def recurse(smb_conn, ip, share, subfolder, patt, depth):
+def recurse(smb_conn, ip, share, subfolder, pattern, depth, chance):
     try:
         filelist = smb_conn.listPath(share, subfolder.replace("//", ""))
-        dir_list(filelist, ip, subfolder, patt)
+        dir_list(smb_conn, ip, share, subfolder, pattern, chance, filelist)
         if depth == 0:
             return 0
     except:
@@ -96,20 +99,36 @@ def recurse(smb_conn, ip, share, subfolder, patt, depth):
 
     for result in filelist:
         if result.isDirectory and result.filename != '.' and result.filename != '..':
-            recurse(smb_conn, ip, share, subfolder + '/' + result.filename, patt, depth - 1)
+            recurse(smb_conn, ip, share, subfolder + '/' + result.filename, pattern, depth - 1, chance)
     return 0
 
 
-def dir_list(files, ip, path, pattern):
-    for result in files:
+def dir_list(smb_conn, ip, share, path, pattern, chance, files):
+    for file in files:
+        chance_download(smb_conn, share, path, chance, file)
         for instance in pattern:
-            if instance in result.filename:
-                if result.isDirectory:
-                    print(("//%s/%s/%s [dir]" % (ip, path.replace("//", ""), result.filename)))
+            if instance in file.filename:
+                if file.isDirectory:
+                    print(("//%s/%s/%s [dir]" % (ip, path.replace("//", ""), file.filename)))
                 else:
-                    print(("//%s/%s/%s" % (ip, path.replace("//", ""), result.filename)))
+                    print(("//%s/%s/%s" % (ip, path.replace("//", ""), file.filename)))
     return 0
 
+
+def chance_download(smb_conn, share, path, chance, file):
+    if file.filename.startswith('.') or file.isDirectory:
+        return 0
+    path = path.replace('/', '')
+    if random.random() < float(chance):
+        file_obj = tempfile.NamedTemporaryFile()
+        try:
+            print("Collecting {}/{}".format(path, file.filename))
+            file_attributes, filesize = smb_conn.retrieveFile(share, path + '/' + file.filename, file_obj)
+        except:
+            print("Unable to retrieve file {}/{} from {}".format(path, file.filename, share))
+
+        file_obj.close()
+    return 0
 
 start_time = time.time()
 
@@ -138,6 +157,7 @@ parser.add_argument('-p', '--pwd', help='SMB password to connect with', default=
 parser.add_argument('-d', '--domain', help='SMB domain to connect with', default='', required=False)
 parser.add_argument('-r', '--recursive', help='Spider subfolders. Set value for depth.', default=0, required=False)
 parser.add_argument('-t', '--threads', help='Number of threads', default=1, required=False)
+parser.add_argument('-c', '--chance', help='Percentage chance of downloading any one file that we come across.', default=0.0, required=False)
 args = parser.parse_args()
 
 # get the list of ips
@@ -161,7 +181,7 @@ else:
 
 for ip in ips:
     # create a thread
-    thread = ScanThread(ip, args.share, args.subfolder, args.user, args.pwd, args.domain, args.recursive, pattern)
+    thread = ScanThread(ip, args.share, args.subfolder, args.user, args.pwd, args.domain, args.recursive, pattern, args.chance)
     thread.start()
 
     # make sure threads do not exceed the threshold set by the -t arg
