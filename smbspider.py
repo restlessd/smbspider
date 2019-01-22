@@ -17,11 +17,10 @@
 
 import argparse
 import os
-import queue
 import sys
 import threading
-
 import time
+
 from netaddr import *
 from nmb.NetBIOS import NetBIOS
 from smb.SMBConnection import SMBConnection
@@ -46,7 +45,7 @@ class ScanThread(threading.Thread):
         net.close()
         conn = SMBConnection(self.user, self.pwd, 'cobwebs', net_name, domain=self.domain, use_ntlm_v2=False)
         if conn.connect(self.ip, port=139, timeout=10):
-            print(("Successfully connected to %s! Spidering %s%s?" % (self.ip, self.share, self.subfolder)))
+            print(("Successfully connected to %s! Spidering %s%s!" % (self.ip, self.share, self.subfolder)))
         else:
             print("Failed to connect to: %s" % (self.ip))
         if int(self.recursive) > 0:
